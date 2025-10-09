@@ -1,0 +1,248 @@
+generator client {
+    provider = "prisma-client-js"
+    binaryTargets = ["native", "linux-musl-arm64-openssl-3.0.x"]
+    output = "/home/ubuntu/promova_se_clone/app/node_modules/.prisma/client"
+}
+
+datasource db {
+    provider = "postgresql"
+    url      = env("DATABASE_URL")
+}
+
+// NextAuth.js Required tables
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model User {
+  id            String    @id @default(cuid())
+  name          String?
+  email         String    @unique
+  password      String?
+  emailVerified DateTime?
+  image         String?
+  role          Role      @default(USER)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  accounts Account[]
+  sessions Session[]
+  
+  // Relations for managing system
+  createdLeads    Lead[]           @relation("LeadCreatedBy")
+  managedCampaigns EmailCampaign[] @relation("CampaignManager")
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
+enum Role {
+  USER
+  ADMIN
+}
+
+// Lead Management System
+model Lead {
+  id          String   @id @default(cuid())
+  email       String   @unique
+  name        String?
+  phone       String?
+  source      String?  // Workshop, E-book 1, E-book 2, Bundle
+  utm_source  String?
+  utm_medium  String?
+  utm_campaign String?
+  status      LeadStatus @default(ACTIVE)
+  tags        String[] // For segmentation
+  customFields Json?   // Flexible custom fields
+  
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  createdBy   User?    @relation("LeadCreatedBy", fields: [createdById], references: [id])
+  createdById String?
+
+  // Relations
+  emailLogs    EmailLog[]
+  campaignLeads CampaignLead[]
+  
+  @@index([email])
+  @@index([status])
+  @@index([source])
+  @@index([createdAt])
+}
+
+enum LeadStatus {
+  ACTIVE
+  INACTIVE
+  UNSUBSCRIBED
+  BOUNCED
+}
+
+// Email Provider Configuration (Modular Architecture)
+model EmailProvider {
+  id           String               @id @default(cuid())
+  name         String               @unique // mailchimp, convertkit, sendgrid, custom
+  displayName  String               // "Mailchimp", "ConvertKit", "SendGrid"
+  isActive     Boolean              @default(false)
+  configuration Json                // Provider-specific config (API keys, etc.)
+  
+  createdAt    DateTime             @default(now())
+  updatedAt    DateTime             @updatedAt
+  
+  // Relations
+  campaigns    EmailCampaign[]
+  emailLogs    EmailLog[]
+  
+  @@index([isActive])
+}
+
+// Email Campaigns
+model EmailCampaign {
+  id            String           @id @default(cuid())
+  name          String
+  subject       String?
+  content       String?          @db.Text
+  templateId    String?          // For provider-specific templates
+  
+  // Campaign configuration
+  providerId    String
+  provider      EmailProvider    @relation(fields: [providerId], references: [id])
+  
+  // Scheduling
+  scheduledFor  DateTime?
+  sentAt        DateTime?
+  
+  // Status
+  status        CampaignStatus   @default(DRAFT)
+  
+  // Metadata
+  createdAt     DateTime         @default(now())
+  updatedAt     DateTime         @updatedAt
+  createdBy     User             @relation("CampaignManager", fields: [createdById], references: [id])
+  createdById   String
+  
+  // Relations
+  campaignLeads CampaignLead[]
+  emailLogs     EmailLog[]
+  
+  @@index([status])
+  @@index([scheduledFor])
+}
+
+enum CampaignStatus {
+  DRAFT
+  SCHEDULED
+  SENDING
+  SENT
+  PAUSED
+  CANCELLED
+}
+
+// Many-to-many relation between campaigns and leads
+model CampaignLead {
+  id         String        @id @default(cuid())
+  campaignId String
+  leadId     String
+  
+  campaign   EmailCampaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  lead       Lead          @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  
+  addedAt    DateTime      @default(now())
+  
+  @@unique([campaignId, leadId])
+}
+
+// Email Activity Logs
+model EmailLog {
+  id         String         @id @default(cuid())
+  
+  // Email details
+  leadId     String
+  lead       Lead           @relation(fields: [leadId], references: [id])
+  
+  providerId String
+  provider   EmailProvider  @relation(fields: [providerId], references: [id])
+  
+  campaignId String?
+  campaign   EmailCampaign? @relation(fields: [campaignId], references: [id])
+  
+  // Log details
+  event      EmailEvent     // sent, delivered, opened, clicked, bounced, etc.
+  subject    String?
+  metadata   Json?          // Provider-specific data
+  
+  createdAt  DateTime       @default(now())
+  
+  @@index([leadId])
+  @@index([event])
+  @@index([createdAt])
+}
+
+enum EmailEvent {
+  SENT
+  DELIVERED
+  OPENED
+  CLICKED
+  BOUNCED
+  COMPLAINED
+  UNSUBSCRIBED
+  FAILED
+}
+
+// System Configuration
+model SystemConfig {
+  id       String @id @default(cuid())
+  key      String @unique
+  value    String @db.Text
+  
+  updatedAt DateTime @updatedAt
+  
+  @@index([key])
+}
+
+// Form Submissions (for contact forms, etc.)
+model FormSubmission {
+  id        String   @id @default(cuid())
+  formType  String   // contact, workshop, ebook, etc.
+  data      Json     // Form data
+  
+  // Lead association
+  leadId    String?
+  
+  // Metadata
+  ipAddress String?
+  userAgent String?
+  source    String?
+  
+  createdAt DateTime @default(now())
+  
+  @@index([formType])
+  @@index([createdAt])
+}
